@@ -59,73 +59,56 @@ def download_file(url):
     return tmp.name
 
 # --- Main Endpoint ---
-@app.route("/generate-video", methods=["POST"])
+@app.route('/generate-video', methods=['POST'])
 def generate_video():
-    data = request.get_json(force=True)
-    image_url = data.get("image_url")
-    music_url = data.get("background_url")
-    clips = data.get("clips", [])
+    try:
+        data = request.json
+        image_url = data.get("image_url")
+        background_url = data.get("background_url")
+        clips = data.get("clips", [])
 
-    if not image_url or not music_url or not clips:
-        return jsonify({"error": "Missing required fields"}), 400
+        if not clips:
+            return jsonify({"error": "No clips provided"}), 400
 
-    # Validate clips
-    valid_clips = []
-    for clip in clips:
-        text = clip.get("voiceText")
-        if isinstance(text, str) and text.strip():
-            valid_clips.append(text.strip())
+        print(f"[INFO] Received {len(clips)} clip(s)")
 
-    if not valid_clips:
-        print("❌ No valid voiceText entries found in clips.")
-        return jsonify({"error": "No valid clips"}), 400
+        # Download image
+        image_path = download_file(image_url, "image.jpg")
+        background_path = download_file(background_url, "background.mp3")
 
-    # Download assets
-    image_path = download_file(image_url)
-    music_path = download_file(music_url)
+        all_clips = []
+        for index, clip in enumerate(clips):
+            voice_text = clip.get("voiceText", "").strip()
+            if not voice_text:
+                print(f"[WARN] Skipping empty voiceText at index {index}")
+                continue
 
-    if not image_path or not music_path:
-        return jsonify({"error": "Failed to download image or music"}), 400
+            print(f"[INFO] Synthesizing clip {index}: {voice_text[:60]}...")
+            try:
+                audio_path = synthesize_voice(voice_text, index)
+                if not os.path.exists(audio_path) or os.path.getsize(audio_path) < 1000:
+                    print(f"[ERROR] Audio generation failed or empty for clip {index}")
+                    continue
+                scene = create_scene(image_path, audio_path, index)
+                all_clips.append(scene)
+            except Exception as e:
+                print(f"[ERROR] ElevenLabs synthesis failed at index {index}: {e}")
+                continue
 
-    video_clips = []
-    full_audio = AudioSegment.empty()
+        if not all_clips:
+            return jsonify({"error": "No valid clips (audio synthesis failed)"}), 400
 
-    for idx, text in enumerate(valid_clips):
-        audio_bytes = synthesize_voice(text)
-        if not audio_bytes:
-            continue
-        audio_path = f"/tmp/audio_{idx}.mp3"
-        with open(audio_path, "wb") as f:
-            f.write(audio_bytes)
+        print(f"[INFO] Combining {len(all_clips)} clips into final video...")
+        final_video = concatenate_videoclips(all_clips)
+        final_video_path = "final_output.mp4"
+        final_video.write_videofile(final_video_path, fps=24)
 
-        full_audio += AudioSegment.from_file(audio_path)
+        drive_url = upload_to_drive(final_video_path)
+        return jsonify({"video_url": drive_url})
 
-        segment = AudioSegment.from_file(audio_path)
-        duration = segment.duration_seconds
-
-        img_clip = ImageClip(image_path).set_duration(duration).resize(height=720).set_position("center").fadein(0.5).fadeout(0.5)
-        img_clip = img_clip.set_audio(AudioFileClip(audio_path))
-        video_clips.append(img_clip)
-
-    if not video_clips:
-        return jsonify({"error": "No valid clips (audio synthesis failed)"}), 400
-
-    final_video = concatenate_videoclips(video_clips)
-
-    # Add background music
-    bg_music = AudioSegment.from_file(music_path) - 10
-    bg_music = bg_music[:len(full_audio)]
-    final_mix = full_audio.overlay(bg_music)
-
-    final_audio_path = "/tmp/final_audio.mp3"
-    final_mix.export(final_audio_path, format="mp3")
-    final_video = final_video.set_audio(AudioFileClip(final_audio_path))
-
-    output_path = "/tmp/final_output.mp4"
-    final_video.write_videofile(output_path, fps=24)
-
-    drive_url = upload_to_drive("final_video.mp4", output_path)
-    return jsonify({"video_url": drive_url})
+    except Exception as e:
+        print(f"[ERROR] Exception: {str(e)}")
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/", methods=["GET"])
