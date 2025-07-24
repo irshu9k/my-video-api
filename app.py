@@ -5,10 +5,7 @@ import base64
 import requests
 from flask import Flask, request, jsonify
 from pydub import AudioSegment
-from moviepy.video.VideoClip import ImageClip
-from moviepy.video.compositing.concatenate import concatenate_videoclips
-from moviepy.audio.io.AudioFileClip import AudioFileClip
-from moviepy.editor import CompositeAudioClip
+from moviepy import VideoFileClip, ImageClip, AudioFileClip
 from PIL import Image
 from datetime import datetime
 import tempfile
