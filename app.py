@@ -5,15 +5,23 @@ from PIL import Image, ImageDraw, ImageFont
 import whisper, requests, subprocess, os, uuid, numpy as np, json
 
 # Google Drive API
+import os, json, base64
+
+# Google Drive API
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 
-# ✅ Google Drive Auth via service account
-SERVICE_ACCOUNT_FILE = "service_account.json"  # put this in the root directory
+# ✅ Google Drive Auth via service account (from env var)
+b64_creds = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON_B64")
+if not b64_creds:
+    raise RuntimeError("Missing GOOGLE_SERVICE_ACCOUNT_JSON_B64 environment variable")
+
+service_json_str = base64.b64decode(b64_creds).decode("utf-8")
+service_info = json.loads(service_json_str)
+
 SCOPES = ['https://www.googleapis.com/auth/drive']
-creds = service_account.Credentials.from_service_account_file(
-    SERVICE_ACCOUNT_FILE, scopes=SCOPES)
+creds = service_account.Credentials.from_service_account_info(service_info, scopes=SCOPES)
 drive_service = build('drive', 'v3', credentials=creds)
 
 def upload_and_share(filepath):
