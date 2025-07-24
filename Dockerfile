@@ -23,7 +23,7 @@ RUN apt-get update && \
 COPY requirements.txt .
 RUN pip install --upgrade pip
 RUN pip install --no-cache-dir -r requirements.txt
-RUN python -c "import moviepy.editor"  # ✅ Verify at build time
+RUN python -c "import moviepy"  # ✅ Verify at build time
 
 # Copy app code
 COPY . .
