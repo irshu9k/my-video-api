@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: my-video-api
+    env: python
+    buildCommand: |
+      apt-get update && apt-get install -y ffmpeg sox fonts-liberation
+      pip install -r requirements.txt
+    startCommand: python app.py
+    envVars:
+      - key: PORT
+        value: 10000
