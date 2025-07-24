@@ -20,7 +20,7 @@ def synthesize(voice_text, voice_id, api_key, output_path):
     import os
 
     headers = {
-        "xi-api-key": api_key,
+        "xi-api-key": ELEVEN_API_KEY,
         "Content-Type": "application/json"
     }
 
