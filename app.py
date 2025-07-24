@@ -1,139 +1,131 @@
 import os
-import json
 import base64
-import requests
 import tempfile
-
+import requests
 from flask import Flask, request, jsonify
-from moviepy.editor import (
-    ImageClip,
-    AudioFileClip,
-    concatenate_videoclips,
-    CompositeAudioClip
-)
+from moviepy.editor import ImageClip, AudioFileClip, concatenate_videoclips
 from pydub import AudioSegment
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 
-# Flask App
 app = Flask(__name__)
-
-# Load ENV Vars
 ELEVEN_API_KEY = os.getenv("ELEVEN_API_KEY")
 SERVICE_ACCOUNT_B64 = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON_B64")
 
-# Save service account json
-with open("service_account.json", "w") as f:
-    f.write(base64.b64decode(SERVICE_ACCOUNT_B64).decode())
-
-# Setup Google Drive Auth
-creds = service_account.Credentials.from_service_account_file(
-    "service_account.json",
-    scopes=["https://www.googleapis.com/auth/drive"]
-)
-drive_service = build("drive", "v3", credentials=creds)
-
-# Voice Generator (ElevenLabs)
-def generate_voice(text, output_path):
-    url = "https://api.elevenlabs.io/v1/text-to-speech/EXAVITQu4vr4xnSDxMaL"
+# --- Voice synthesis ---
+def synthesize_voice(text, voice_id="WffdYtALnWHwMOtLM7Hk"):
     headers = {
         "xi-api-key": ELEVEN_API_KEY,
         "Content-Type": "application/json"
     }
-    body = {
+    data = {
         "text": text,
-        "voice_settings": {
-            "stability": 0.5,
-            "similarity_boost": 0.7
-        }
+        "model_id": "eleven_multilingual_v2",
+        "voice_settings": {"stability": 0.4, "similarity_boost": 0.8}
     }
-
-    r = requests.post(url, headers=headers, json=body)
-    if r.status_code != 200:
-        print("ElevenLabs error:", r.text)
+    url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
+    response = requests.post(url, headers=headers, json=data)
+    if response.status_code == 200:
+        return response.content
+    else:
+        print(f"❌ ElevenLabs failed: {response.text}")
         return None
 
-    with open(output_path, "wb") as f:
-        f.write(r.content)
-    return output_path
+# --- Google Drive Upload ---
+def upload_to_drive(filename, filepath):
+    creds_data = base64.b64decode(SERVICE_ACCOUNT_B64)
+    creds_dict = json.loads(creds_data)
+    creds = service_account.Credentials.from_service_account_info(creds_dict)
+    service = build("drive", "v3", credentials=creds)
 
-# Main API
+    file_metadata = {"name": filename, "mimeType": "video/mp4"}
+    media = MediaFileUpload(filepath, mimetype="video/mp4", resumable=True)
+    uploaded_file = service.files().create(body=file_metadata, media_body=media, fields="id").execute()
+
+    file_id = uploaded_file.get("id")
+    # Make public
+    service.permissions().create(fileId=file_id, body={"role": "reader", "type": "anyone"}).execute()
+    return f"https://drive.google.com/uc?id={file_id}&export=download"
+
+# --- Utility download ---
+def download_file(url):
+    response = requests.get(url)
+    if response.status_code != 200:
+        return None
+    tmp = tempfile.NamedTemporaryFile(delete=False)
+    tmp.write(response.content)
+    tmp.close()
+    return tmp.name
+
+# --- Main Endpoint ---
 @app.route("/generate-video", methods=["POST"])
 def generate_video():
-    try:
-        data = request.get_json()
+    data = request.get_json()
+    image_url = data.get("image_url")
+    music_url = data.get("background_music_url")
+    clips = data.get("clips", [])
 
-        image_url = data.get("image_url")
-        background_url = data.get("background_url")
-        clips = data.get("clips", [])
+    if not image_url or not music_url or not clips:
+        return jsonify({"error": "Missing required fields"}), 400
 
-        if not image_url or not background_url or not clips:
-            return jsonify({"error": "Missing fields"}), 400
+    # Download assets
+    image_path = download_file(image_url)
+    music_path = download_file(music_url)
 
-        # Download shared image
-        img_path = tempfile.mktemp(suffix=".jpg")
-        with open(img_path, "wb") as f:
-            f.write(requests.get(image_url).content)
+    if not image_path or not music_path:
+        return jsonify({"error": "Failed to download image or music"}), 400
 
-        voice_clips = []
-        scene_videos = []
+    video_clips = []
+    full_audio = AudioSegment.empty()
 
-        for i, clip in enumerate(clips):
-            voice_text = clip.get("voiceText", "").strip()
-            if not voice_text:
-                continue
+    for idx, clip in enumerate(clips):
+        text = clip.get("voiceText", "").strip()
+        if not text:
+            continue
+        audio_bytes = synthesize_voice(text)
+        if not audio_bytes:
+            continue
+        audio_path = f"/tmp/audio_{idx}.mp3"
+        with open(audio_path, "wb") as f:
+            f.write(audio_bytes)
 
-            voice_path = tempfile.mktemp(suffix=".mp3")
-            if not generate_voice(voice_text, voice_path):
-                continue
+        # Add to full_audio
+        full_audio += AudioSegment.from_file(audio_path)
 
-            audio = AudioSegment.from_file(voice_path)
-            duration = audio.duration_seconds
+        # Calculate duration for image
+        segment = AudioSegment.from_file(audio_path)
+        duration = segment.duration_seconds
 
-            img_clip = (
-                ImageClip(img_path)
-                .set_duration(duration)
-                .resize(height=720)
-                .set_position("center")
-                .zoom_in(1.05)
-            )
+        img_clip = ImageClip(image_path).set_duration(duration).resize(height=720).set_position("center").fadein(0.5).fadeout(0.5)
+        img_clip = img_clip.set_audio(AudioFileClip(audio_path))
+        video_clips.append(img_clip)
 
-            video = img_clip.set_audio(AudioFileClip(voice_path))
-            scene_videos.append(video)
+    if not video_clips:
+        return jsonify({"error": "No valid clips"}), 400
 
-        if not scene_videos:
-            return jsonify({"error": "No valid clips"}), 400
+    final_video = concatenate_videoclips(video_clips)
 
-        final_video = concatenate_videoclips(scene_videos, method="compose")
+    # Add background music
+    bg_music = AudioSegment.from_file(music_path)
+    bg_music = bg_music - 10  # lower volume
+    bg_music = bg_music[:len(full_audio)]  # trim to duration
+    final_mix = full_audio.overlay(bg_music)
 
-        # Add background music
-        bg_path = tempfile.mktemp(suffix=".mp3")
-        with open(bg_path, "wb") as f:
-            f.write(requests.get(background_url).content)
+    final_audio_path = "/tmp/final_audio.mp3"
+    final_mix.export(final_audio_path, format="mp3")
+    final_video = final_video.set_audio(AudioFileClip(final_audio_path))
 
-        final_duration = final_video.duration
-        bg_audio = AudioFileClip(bg_path).subclip(0, final_duration)
-        final_audio = CompositeAudioClip([final_video.audio, bg_audio.volumex(0.2)])
-        final_video = final_video.set_audio(final_audio)
+    output_path = "/tmp/final_output.mp4"
+    final_video.write_videofile(output_path, fps=24)
 
-        # Save and Upload
-        out_path = "final_video.mp4"
-        final_video.write_videofile(out_path, fps=24)
+    drive_url = upload_to_drive("final_video.mp4", output_path)
+    return jsonify({"video_url": drive_url})
 
-        file_metadata = {"name": "final_video.mp4", "mimeType": "video/mp4"}
-        media = MediaFileUpload(out_path, mimetype="video/mp4")
-        uploaded = drive_service.files().create(body=file_metadata, media_body=media, fields="id").execute()
 
-        # Make file public
-        file_id = uploaded.get("id")
-        drive_service.permissions().create(fileId=file_id, body={"role": "reader", "type": "anyone"}).execute()
-        file_url = f"https://drive.google.com/uc?id={file_id}"
-
-        return jsonify({"video_url": file_url})
-
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+@app.route("/", methods=["GET"])
+def health():
+    return "✅ Video API running", 200
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(host="0.0.0.0", port=5000, debug=True)
