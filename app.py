@@ -1,5 +1,5 @@
 from flask import Flask, request, jsonify
-from moviepy.editor import *
+from moviepy import VideoFileClip, ImageClip, AudioFileClip
 from pydub import AudioSegment
 from PIL import Image, ImageDraw, ImageFont
 import whisper, requests, subprocess, os, uuid, numpy as np, json
