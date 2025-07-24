@@ -1,29 +1,28 @@
 from flask import Flask, request, jsonify
-from moviepy import VideoFileClip, ImageClip, AudioFileClip
+import os, json, base64, uuid, subprocess, requests, numpy as np
+from moviepy.editor import (
+    VideoFileClip, ImageClip, AudioFileClip,
+    concatenate_videoclips, ColorClip, CompositeVideoClip
+)
 from pydub import AudioSegment
-from PIL import Image, ImageDraw, ImageFont
-import whisper, requests, subprocess, os, uuid, numpy as np, json
+from PIL import Image
+import whisper
 
-# Google Drive API
-import os, json, base64
-
-# Google Drive API
+# ========== 🔐 Google Drive Auth from Base64 Env ==========
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 
-# ✅ Google Drive Auth via service account (from env var)
+SCOPES = ['https://www.googleapis.com/auth/drive']
 b64_creds = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON_B64")
 if not b64_creds:
     raise RuntimeError("Missing GOOGLE_SERVICE_ACCOUNT_JSON_B64 environment variable")
 
-service_json_str = base64.b64decode(b64_creds).decode("utf-8")
-service_info = json.loads(service_json_str)
-
-SCOPES = ['https://www.googleapis.com/auth/drive']
+service_info = json.loads(base64.b64decode(b64_creds))
 creds = service_account.Credentials.from_service_account_info(service_info, scopes=SCOPES)
 drive_service = build('drive', 'v3', credentials=creds)
 
+# ========== 📤 Google Drive Upload ==========
 def upload_and_share(filepath):
     file_metadata = {'name': os.path.basename(filepath)}
     media = MediaFileUpload(filepath, resumable=True)
@@ -32,6 +31,7 @@ def upload_and_share(filepath):
     drive_service.permissions().create(fileId=file_id, body={"role": "reader", "type": "anyone"}).execute()
     return f"https://drive.google.com/uc?id={file_id}"
 
+# ========== 📥 Download Helper ==========
 def download_file(url, filename):
     r = requests.get(url, stream=True)
     if r.status_code == 200:
@@ -41,7 +41,7 @@ def download_file(url, filename):
         return filename
     return None
 
-# ✅ ElevenLabs TTS + FX
+# ========== 🎙 ElevenLabs Voice Synth ==========
 ELEVEN_API_KEY = os.getenv("ELEVEN_API_KEY", "")
 VOICE_ID = "WffdYtALnWHwMOtLM7Hk"
 
@@ -74,12 +74,11 @@ def generate_voice(text, index):
         return final
     return None
 
-# ✅ Peak Detection
+# ========== 🎛 FX: Blinks, Peaks, Sway ==========
 def detect_peaks(path, frame_ms=50, threshold_db=-25):
     audio = AudioSegment.from_file(path)
     return [i / 1000.0 for i in range(0, len(audio), frame_ms) if audio[i:i+frame_ms].dBFS > threshold_db]
 
-# ✅ Blink
 def add_blinks(base, peaks, dur=0.05, fade=0.025, op=0.5):
     blinks = [
         ColorClip(base.size, (0, 0, 0), duration=dur)
@@ -91,7 +90,6 @@ def add_blinks(base, peaks, dur=0.05, fade=0.025, op=0.5):
     ]
     return CompositeVideoClip([base] + blinks)
 
-# ✅ Sway
 def apply_sway(video, max_angle=2, max_shift=15, period=6):
     def transform(get_frame, t):
         frame = get_frame(t)
@@ -100,16 +98,15 @@ def apply_sway(video, max_angle=2, max_shift=15, period=6):
         return ImageClip(frame).rotate(angle, resample='bilinear', expand=False).set_position(("center", 360 + y_shift)).get_frame(0)
     return video.fl(transform)
 
-# ✅ Whisper Subtitle Generator
+# ========== 📝 Whisper Subtitles ==========
 def generate_whisper_subs(audio_path, video_path="scene.mp4"):
     model = whisper.load_model("small")
     result = model.transcribe(audio_path, word_timestamps=True, language="en")
     words = []
     for seg in result["segments"]:
         for w in seg["words"]:
-            wtxt = w["word"].strip()
-            if wtxt:
-                words.append({"word": wtxt, "start": w["start"], "end": w["end"]})
+            if w["word"].strip():
+                words.append({"word": w["word"], "start": w["start"], "end": w["end"]})
 
     def fmt(t):
         cs = int(round(t * 100))
@@ -148,8 +145,12 @@ def generate_whisper_subs(audio_path, video_path="scene.mp4"):
                    "ass=captions.ass:fontsdir=/usr/share/fonts/truetype/liberation",
                    "-c:a", "copy", "output_with_subs.mp4"])
 
-# ✅ Flask App
+# ========== 🌐 Flask App ==========
 app = Flask(__name__)
+
+@app.route("/")
+def index():
+    return "✅ Flask server is running!"
 
 @app.route("/generate-video", methods=["POST"])
 def generate_video():
@@ -196,7 +197,6 @@ def generate_video():
 
     swayed.set_audio(AudioFileClip("mixed_audio.mp3")).write_videofile("scene.mp4", fps=24)
 
-    # ✅ Whisper captions
     generate_whisper_subs("combined_voice.mp3", "scene.mp4")
     out = f"video_{uuid.uuid4().hex[:6]}.mp4"
     os.rename("output_with_subs.mp4", out)
