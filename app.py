@@ -1,9 +1,8 @@
 from flask import Flask, request, jsonify
 import os, json, base64, uuid, subprocess, requests, numpy as np
-from moviepy.editor import (
+from moviepy import
     VideoFileClip, ImageClip, AudioFileClip,
     concatenate_videoclips, ColorClip, CompositeVideoClip
-)
 from pydub import AudioSegment
 from PIL import Image
 import whisper
