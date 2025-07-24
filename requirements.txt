@@ -1,5 +1,5 @@
 Flask
-moviepy==2.2.1
+moviepy==1.0.3
 pydub
 Pillow
 whisper
