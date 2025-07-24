@@ -63,7 +63,7 @@ def download_file(url):
 def generate_video():
     data = request.get_json()
     image_url = data.get("image_url")
-    music_url = data.get("background_music_url")
+    music_url = data.get("background_url")
     clips = data.get("clips", [])
 
     if not image_url or not music_url or not clips:
