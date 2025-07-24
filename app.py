@@ -15,39 +15,33 @@ ELEVEN_API_KEY = os.getenv("ELEVEN_API_KEY")
 SERVICE_ACCOUNT_B64 = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON_B64")
 DEFAULT_VOICE_ID = "WffdYtALnWHwMOtLM7Hk"  # Your chosen free voice ID from ElevenLabs
 
-def synthesize_voice(text, voice_id=None):
-    """
-    Synthesizes voice from text using ElevenLabs API.
-    Returns audio bytes if successful, or None if failure.
-    """
-    if not voice_id:
-        voice_id = DEFAULT_VOICE_ID
+def synthesize(voice_text, voice_id, api_key, output_path):
+    import requests
+    import os
 
-    url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
     headers = {
-        "accept": "audio/mpeg",
-        "xi-api-key": ELEVEN_API_KEY,
+        "xi-api-key": api_key,
         "Content-Type": "application/json"
     }
-    data = {
-        "text": text,
+
+    payload = {
+        "text": voice_text,
         "voice_settings": {
             "stability": 0.5,
             "similarity_boost": 0.75
         }
     }
 
-    try:
-        response = requests.post(url, json=data, headers=headers)
+    tts_url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}/stream"
 
-        if response.status_code == 200:
-            print("[✅] ElevenLabs voice synthesis success")
-            return response.content  # Audio bytes (MP3)
-        else:
-            print(f"[❌] ElevenLabs failed: {response.status_code} - {response.text}")
-            return None
-    except Exception as e:
-        print(f"[🔥] Exception in synthesize_voice: {e}")
+    response = requests.post(tts_url, headers=headers, json=payload)
+
+    if response.status_code == 200:
+        with open(output_path, "wb") as f:
+            f.write(response.content)
+        return output_path
+    else:
+        print(f"❌ Failed to synthesize audio: {response.status_code} - {response.text}")
         return None
 
 # --- Google Drive Upload ---
@@ -67,12 +61,14 @@ def upload_to_drive(filename, filepath):
 
 # --- Utility download ---
 def download_file(url, filename):
+    import requests
     response = requests.get(url)
-    if response.status_code != 200:
-        raise Exception(f"Failed to download {url}")
-    with open(filename, 'wb') as f:
-        f.write(response.content)
-    return filename
+    if response.status_code == 200:
+        with open(filename, 'wb') as f:
+            f.write(response.content)
+        return filename
+    else:
+        raise Exception(f"Failed to download file from {url}")
 
 # --- Main Endpoint ---
 @app.route('/generate-video', methods=['POST'])
