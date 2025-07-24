@@ -2,6 +2,7 @@ import os
 import base64
 import tempfile
 import requests
+import json
 from flask import Flask, request, jsonify
 from moviepy.editor import ImageClip, AudioFileClip, concatenate_videoclips
 from pydub import AudioSegment
@@ -44,7 +45,6 @@ def upload_to_drive(filename, filepath):
     uploaded_file = service.files().create(body=file_metadata, media_body=media, fields="id").execute()
 
     file_id = uploaded_file.get("id")
-    # Make public
     service.permissions().create(fileId=file_id, body={"role": "reader", "type": "anyone"}).execute()
     return f"https://drive.google.com/uc?id={file_id}&export=download"
 
@@ -69,6 +69,17 @@ def generate_video():
     if not image_url or not music_url or not clips:
         return jsonify({"error": "Missing required fields"}), 400
 
+    # Validate clips
+    valid_clips = []
+    for clip in clips:
+        text = clip.get("voiceText")
+        if isinstance(text, str) and text.strip():
+            valid_clips.append(text.strip())
+
+    if not valid_clips:
+        print("❌ No valid voiceText entries found in clips.")
+        return jsonify({"error": "No valid clips"}), 400
+
     # Download assets
     image_path = download_file(image_url)
     music_path = download_file(music_url)
@@ -79,10 +90,7 @@ def generate_video():
     video_clips = []
     full_audio = AudioSegment.empty()
 
-    for idx, clip in enumerate(clips):
-        text = clip.get("voiceText", "").strip()
-        if not text:
-            continue
+    for idx, text in enumerate(valid_clips):
         audio_bytes = synthesize_voice(text)
         if not audio_bytes:
             continue
@@ -90,10 +98,8 @@ def generate_video():
         with open(audio_path, "wb") as f:
             f.write(audio_bytes)
 
-        # Add to full_audio
         full_audio += AudioSegment.from_file(audio_path)
 
-        # Calculate duration for image
         segment = AudioSegment.from_file(audio_path)
         duration = segment.duration_seconds
 
@@ -102,14 +108,13 @@ def generate_video():
         video_clips.append(img_clip)
 
     if not video_clips:
-        return jsonify({"error": "No valid clips"}), 400
+        return jsonify({"error": "No valid clips (audio synthesis failed)"}), 400
 
     final_video = concatenate_videoclips(video_clips)
 
     # Add background music
-    bg_music = AudioSegment.from_file(music_path)
-    bg_music = bg_music - 10  # lower volume
-    bg_music = bg_music[:len(full_audio)]  # trim to duration
+    bg_music = AudioSegment.from_file(music_path) - 10
+    bg_music = bg_music[:len(full_audio)]
     final_mix = full_audio.overlay(bg_music)
 
     final_audio_path = "/tmp/final_audio.mp3"
