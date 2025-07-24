@@ -16,7 +16,7 @@ RUN apt-get update && \
     libxext6 \
     libgl1 \
     fonts-liberation \
-    ttf-dejavu \
+    fonts-dejavu \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies
