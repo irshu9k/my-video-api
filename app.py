@@ -1,152 +1,129 @@
 import os
-import io
 import json
 import base64
+import tempfile
 import requests
 from flask import Flask, request, jsonify
-from pydub import AudioSegment
-from moviepy import VideoFileClip, ImageClip, AudioFileClip
-from PIL import Image
-from datetime import datetime
-import tempfile
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload
+from moviepy.video.io.VideoFileClip import VideoFileClip
+from moviepy.video.VideoClip import ImageClip
+from moviepy.audio.AudioClip import AudioFileClip, CompositeAudioClip
+from pydub import AudioSegment
+from PIL import Image
+from io import BytesIO
 
 app = Flask(__name__)
 
-# Load ElevenLabs API key from env
+# Load and decode Google service account from base64
+GOOGLE_CREDENTIALS_B64 = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON_B64")
+creds = json.loads(base64.b64decode(GOOGLE_CREDENTIALS_B64))
+SCOPES = ['https://www.googleapis.com/auth/drive.file']
+credentials = service_account.Credentials.from_service_account_info(creds, scopes=SCOPES)
+drive_service = build('drive', 'v3', credentials=credentials)
+
 ELEVEN_API_KEY = os.environ.get("ELEVEN_API_KEY")
-VOICE_ID = "WffdYtALnWHwMOtLM7Hk"  # Replace with your ElevenLabs voice ID
+HEADERS = {
+    "xi-api-key": ELEVEN_API_KEY,
+    "Content-Type": "application/json"
+}
 
-# Setup Google Drive client
-def setup_drive_service():
-    json_b64 = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON_B64")
-    info = json.loads(base64.b64decode(json_b64))
-    creds = service_account.Credentials.from_service_account_info(info, scopes=["https://www.googleapis.com/auth/drive.file"])
-    return build("drive", "v3", credentials=creds)
+def download_file(url, suffix):
+    response = requests.get(url)
+    if response.status_code != 200:
+        raise Exception(f"Failed to download from {url}")
+    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+    temp_file.write(response.content)
+    temp_file.close()
+    return temp_file.name
 
-drive_service = setup_drive_service()
-
-def text_to_speech(text):
-    url = f"https://api.elevenlabs.io/v1/text-to-speech/{VOICE_ID}"
-    headers = {
-        "xi-api-key": ELEVEN_API_KEY,
-        "Content-Type": "application/json"
-    }
+def synthesize_voice(text, voice_id="WffdYtALnWHwMOtLM7Hk"):
     payload = {
         "text": text,
-        "model_id": "eleven_monolingual_v1"
+        "model_id": "eleven_monolingual_v1",
+        "voice_settings": {"stability": 0.4, "similarity_boost": 0.8}
     }
-    response = requests.post(url, headers=headers, json=payload)
-    if response.status_code == 200:
-        return AudioSegment.from_file(io.BytesIO(response.content), format="mp3")
-    else:
+    response = requests.post(
+        f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}",
+        headers=HEADERS,
+        json=payload
+    )
+    if response.status_code != 200:
         raise Exception("Voice generation failed")
 
-def download_file(url):
-    response = requests.get(url)
-    if response.status_code == 200:
-        return io.BytesIO(response.content)
-    else:
-        raise Exception(f"Failed to download: {url}")
+    audio_path = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3").name
+    with open(audio_path, 'wb') as f:
+        f.write(response.content)
+    return audio_path
 
-def generate_video_from_clips(clips_data, image_url):
-    scene_clips = []
+def upload_to_drive(file_path, filename):
+    file_metadata = {'name': filename}
+    media = MediaFileUpload(file_path, mimetype='video/mp4')
+    uploaded_file = drive_service.files().create(body=file_metadata, media_body=media, fields='id').execute()
+    file_id = uploaded_file['id']
+    drive_service.permissions().create(fileId=file_id, body={'role': 'reader', 'type': 'anyone'}).execute()
+    return f"https://drive.google.com/uc?id={file_id}"
 
-    # Download image once
-    image_data = download_file(image_url)
-    image = Image.open(image_data).convert("RGB")
-    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as img_file:
-        image.save(img_file.name)
-        image_path = img_file.name
+def create_clip(image_path, audio_path, duration=5):
+    audio_clip = AudioFileClip(audio_path)
+    duration = audio_clip.duration
+    image_clip = ImageClip(image_path).resize((1280, 720)).set_duration(duration).set_audio(audio_clip)
 
-    for i, clip in enumerate(clips_data):
-        voice_text = clip.get("voiceText")
-        if not voice_text:
-            continue
-
-        voice_audio = text_to_speech(voice_text)
-        audio_path = f"temp_audio_{i}.mp3"
-        voice_audio.export(audio_path, format="mp3")
-
-        duration = voice_audio.duration_seconds
-        if duration < 1:
-            duration = 2  # fallback minimum duration
-
-        image_clip = ImageClip(image_path, duration=duration).resize((1280, 720)).fadein(0.5).fadeout(0.5)
-        audio_clip = AudioFileClip(audio_path)
-        image_clip = image_clip.set_audio(audio_clip)
-
-        scene_clips.append(image_clip)
-
-    if not scene_clips:
-        raise Exception("No valid clips")
-
-    return concatenate_videoclips(scene_clips, method="compose")
-
-def overlay_background_music(video_path, music_path):
-    final = AudioFileClip(video_path)
-    bg_music = AudioSegment.from_file(music_path).fade_in(2000).fade_out(2000)
-    bg_music = bg_music - 12  # reduce volume
-
-    with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as bg_file:
-        bg_music.export(bg_file.name, format="mp3")
-        bg_path = bg_file.name
-
-    music_clip = AudioFileClip(bg_path).set_duration(final.duration)
-    final_video = CompositeAudioClip([final.audio, music_clip])
-    output_path = "final_output.mp4"
-
-    from moviepy.video.io.VideoFileClip import VideoFileClip
-    video = VideoFileClip(video_path)
-    video = video.set_audio(final_video)
-    video.write_videofile(output_path, fps=24)
-
-    return output_path
-
-def upload_to_drive(file_path):
-    file_name = f"video_{datetime.now().strftime('%Y%m%d%H%M%S')}.mp4"
-    media = MediaFileUpload(file_path, mimetype="video/mp4")
-    file_metadata = {"name": file_name}
-    uploaded = drive_service.files().create(body=file_metadata, media_body=media, fields="id").execute()
-
-    # Make file public
-    drive_service.permissions().create(fileId=uploaded["id"], body={"role": "reader", "type": "anyone"}).execute()
-    return f"https://drive.google.com/uc?id={uploaded['id']}"
+    # Apply a zoom-in effect
+    zoom_clip = image_clip.fx(lambda clip: clip.resize(lambda t: 1 + 0.03 * t))
+    return zoom_clip
 
 @app.route("/generate-video", methods=["POST"])
 def generate_video():
     try:
         data = request.get_json()
+
         image_url = data.get("image_url")
         background_url = data.get("background_url")
-        clips = data.get("clips")
+        clips_data = data.get("clips", [])
 
-        if not clips or not image_url or not background_url:
-            return jsonify({"error": "Missing parameters"}), 400
+        if not clips_data or not image_url or not background_url:
+            return jsonify({"error": "Missing image_url, background_url or clips"}), 400
 
-        print("⏬ Generating video scenes...")
-        final_clip_path = "temp_scene.mp4"
-        video = generate_video_from_clips(clips, image_url)
-        video.write_videofile(final_clip_path, fps=24)
+        image_path = download_file(image_url, ".jpg")
+        bg_music_path = download_file(background_url, ".mp3")
 
-        print("🎵 Adding background music...")
-        bg_music_data = download_file(background_url)
-        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as music_file:
-            music_file.write(bg_music_data.read())
-            music_path = music_file.name
+        final_clips = []
 
-        final_video_path = overlay_background_music(final_clip_path, music_path)
+        for i, clip in enumerate(clips_data):
+            voice_text = clip.get("voiceText")
+            if not voice_text:
+                continue
 
-        print("📤 Uploading to Google Drive...")
-        drive_url = upload_to_drive(final_video_path)
+            voice_path = synthesize_voice(voice_text)
+            video_clip = create_clip(image_path, voice_path)
+            final_clips.append(video_clip)
 
-        return jsonify({"video_url": drive_url})
+        if not final_clips:
+            return jsonify({"error": "No valid clips generated"}), 400
+
+        from moviepy.video.compositing.concatenate import concatenate_videoclips
+        final_video = concatenate_videoclips(final_clips, method="compose")
+
+        # Add background music
+        final_audio = AudioSegment.from_file(bg_music_path)
+        video_duration_ms = int(final_video.duration * 1000)
+        bg_music = final_audio[:video_duration_ms].fade_in(2000).fade_out(2000)
+
+        temp_audio = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3").name
+        bg_music.export(temp_audio, format="mp3")
+
+        final_audio_clip = AudioFileClip(temp_audio)
+        final_video = final_video.set_audio(final_audio_clip)
+
+        output_path = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4").name
+        final_video.write_videofile(output_path, fps=24, codec='libx264')
+
+        drive_link = upload_to_drive(output_path, "final_video.mp4")
+        return jsonify({"video_url": drive_link})
 
     except Exception as e:
-        print("❌ Error:", e)
         return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+    app.run(debug=True)
