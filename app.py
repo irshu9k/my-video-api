@@ -61,7 +61,7 @@ def download_file(url):
 # --- Main Endpoint ---
 @app.route("/generate-video", methods=["POST"])
 def generate_video():
-    data = request.get_json()
+    data = request.get_json(force=True)
     image_url = data.get("image_url")
     music_url = data.get("background_url")
     clips = data.get("clips", [])
