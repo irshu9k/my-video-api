@@ -49,14 +49,13 @@ def upload_to_drive(filename, filepath):
     return f"https://drive.google.com/uc?id={file_id}&export=download"
 
 # --- Utility download ---
-def download_file(url):
+def download_file(url, filename):
     response = requests.get(url)
     if response.status_code != 200:
-        return None
-    tmp = tempfile.NamedTemporaryFile(delete=False)
-    tmp.write(response.content)
-    tmp.close()
-    return tmp.name
+        raise Exception(f"Failed to download {url}")
+    with open(filename, 'wb') as f:
+        f.write(response.content)
+    return filename
 
 # --- Main Endpoint ---
 @app.route('/generate-video', methods=['POST'])
