@@ -19,9 +19,11 @@ RUN apt-get update && \
     fonts-dejavu \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Install Python dependencies
+# Install Python dependencies manually and verify
 COPY requirements.txt .
-RUN pip install --no-cache-dir --upgrade pip && pip install --no-cache-dir -r requirements.txt
+RUN pip install --upgrade pip
+RUN pip install --no-cache-dir -r requirements.txt
+RUN python -c "import moviepy.editor"  # ✅ Verify at build time
 
 # Copy app code
 COPY . .
